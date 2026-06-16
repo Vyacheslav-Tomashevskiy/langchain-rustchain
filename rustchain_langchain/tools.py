@@ -74,6 +74,34 @@ def summarize_health(data: dict) -> str:
     )
 
 
+def summarize_balance(data: dict) -> str:
+    return (
+        f"Wallet '{data.get('miner_id', '?')}' holds "
+        f"{data.get('amount_rtc', '?')} RTC."
+    )
+
+
+def summarize_epoch(data: dict) -> str:
+    return (
+        f"RustChain epoch {data.get('epoch', '?')} (slot {data.get('slot', '?')}): "
+        f"{data.get('enrolled_miners', '?')} enrolled miners, "
+        f"epoch reward pot {data.get('epoch_pot', '?')} RTC, "
+        f"{data.get('blocks_per_epoch', '?')} blocks/epoch, "
+        f"total supply {data.get('total_supply_rtc', '?')} RTC."
+    )
+
+
+def summarize_bounties(items) -> str:
+    if not isinstance(items, list) or not items:
+        return "No open RustChain bounties found."
+    lines = [f"{len(items)} open RustChain bounties (newest first):"]
+    for b in items:
+        lines.append(
+            f"- #{b.get('number')} [{b.get('reward')}] {b.get('title')} — {b.get('url')}"
+        )
+    return "\n".join(lines)
+
+
 # --- LangChain tool wrappers --------------------------------------------
 def get_rustchain_tools(
     base_url: str = "https://rustchain.org",
@@ -86,6 +114,8 @@ def get_rustchain_tools(
     Requires ``langchain-core``.
     """
     from langchain_core.tools import BaseTool  # lazy import
+    from pydantic import BaseModel, Field
+    from typing import Type
 
     client = RustChainClient(base_url=base_url, timeout=timeout, verify=verify)
 
@@ -101,6 +131,47 @@ def get_rustchain_tools(
                 return self._run(*args, **kwargs)
 
         return _Tool(name=name, description=description)
+
+    # --- argument-taking tools (balance, bounties) ----------------------
+    class _WalletInput(BaseModel):
+        miner_id: str = Field(description="Wallet address or miner id to query, e.g. 'dual-g4-125'")
+
+    class _BalanceTool(BaseTool):
+        name: str = "rustchain_balance"
+        description: str = (
+            "Check the RTC balance of a RustChain wallet/miner. "
+            "Input: miner_id (a wallet address or miner id)."
+        )
+        args_schema: Type[BaseModel] = _WalletInput
+
+        def _run(self, miner_id: str) -> str:
+            try:
+                return summarize_balance(client.balance(miner_id))
+            except Exception as e:
+                return f"RustChain query failed ({type(e).__name__}): {e}"
+
+        async def _arun(self, miner_id: str) -> str:
+            return self._run(miner_id)
+
+    class _BountyInput(BaseModel):
+        limit: int = Field(default=10, description="Max bounties to return (1-50)")
+
+    class _BountiesTool(BaseTool):
+        name: str = "rustchain_bounties"
+        description: str = (
+            "List open RustChain bounties (GitHub issues with RTC rewards). "
+            "Input: limit (default 10). Returns number, reward, title, URL."
+        )
+        args_schema: Type[BaseModel] = _BountyInput
+
+        def _run(self, limit: int = 10) -> str:
+            try:
+                return summarize_bounties(client.bounties(limit))
+            except Exception as e:
+                return f"RustChain query failed ({type(e).__name__}): {e}"
+
+        async def _arun(self, limit: int = 10) -> str:
+            return self._run(limit)
 
     return [
         _make(
@@ -132,4 +203,13 @@ def get_rustchain_tools(
             client.health,
             summarize_health,
         ),
+        _make(
+            "rustchain_epoch",
+            "Get the current RustChain epoch: number, slot, enrolled miners, epoch "
+            "reward pot, and total supply. Use for questions about the current mining round.",
+            client.epoch,
+            summarize_epoch,
+        ),
+        _BalanceTool(),
+        _BountiesTool(),
     ]

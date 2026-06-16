@@ -16,7 +16,7 @@ RustChain agent economy from **live, self-verifying** public data.
 
 RustChain's thesis is *agents need crypto, and crypto needs agents*. For an agent
 to reason about the network — how much RTC has been paid, who's mining, is the
-node up — it needs tools, not a docs page. These four read-only tools give it
+node up — it needs tools, not a docs page. These read-only tools give it
 exactly that. **No keys, no writes, no wallet operations** — same public surfaces
 you can open in a browser.
 
@@ -46,6 +46,9 @@ Each tool returns a compact, agent-friendly summary (agents reason better on a
 | `rustchain_payouts` | total RTC paid + distinct recipients (chain-computed) |
 | `rustchain_miners` | who's attesting, broken down by hardware architecture |
 | `rustchain_node_health` | is the node up (ok / db_rw / version / backup age) |
+| `rustchain_epoch` | current epoch: number, slot, enrolled miners, reward pot, supply |
+| `rustchain_balance` | RTC balance for a wallet/miner (arg: `miner_id`) |
+| `rustchain_bounties` | open RustChain bounties with RTC rewards (arg: `limit`) |
 
 The framework-free `RustChainClient` and `summarize_*` helpers are also exported,
 so you can use the data without LangChain.
@@ -62,6 +65,12 @@ get_rustchain_tools(base_url="https://50.28.86.131", verify=False)  # self-signe
 pip install -e ".[test]"
 pytest -q          # no network — HTTP is mocked
 ```
+
+## Credits
+
+The `balance` / `bounties` / `epoch` tools were contributed by **@hektorhq**
+(SiliconBountyHunter) for [bounty #3074](https://github.com/Scottcjn/rustchain-bounties)
+and merged here (with the balance endpoint corrected to `/wallet/balance`). Thank you! 🦞
 
 ## License
 

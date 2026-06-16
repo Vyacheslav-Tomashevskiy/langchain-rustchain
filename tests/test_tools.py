@@ -9,6 +9,9 @@ from rustchain_langchain import (
     summarize_payouts,
     summarize_miners,
     summarize_health,
+    summarize_balance,
+    summarize_epoch,
+    summarize_bounties,
 )
 
 
@@ -103,3 +106,32 @@ def test_tool_run_summarizes_on_success():
     with mock.patch("rustchain_langchain.client.requests.get", return_value=_Resp(payload)):
         out = tool._run()
     assert "66,531+ RTC paid" in out
+
+
+def test_summarize_balance():
+    s = summarize_balance({"miner_id": "dual-g4-125", "amount_rtc": 718.51})
+    assert "dual-g4-125" in s and "718.51 RTC" in s
+
+
+def test_summarize_epoch():
+    s = summarize_epoch({"epoch": 195, "slot": 28191, "enrolled_miners": 24,
+                         "epoch_pot": 1.5, "blocks_per_epoch": 144, "total_supply_rtc": 8388608})
+    assert "epoch 195" in s and "24 enrolled" in s and "1.5 RTC" in s
+
+
+def test_summarize_bounties():
+    s = summarize_bounties([{"number": 3074, "reward": "17 RTC", "title": "LangChain tool",
+                             "url": "http://x", "created": "2026-03"}])
+    assert "#3074" in s and "17 RTC" in s
+
+
+def test_summarize_bounties_empty():
+    assert "No open" in summarize_bounties([])
+
+
+def test_client_balance_uses_wallet_balance_endpoint():
+    c = RustChainClient(base_url="https://example.test")
+    with mock.patch("rustchain_langchain.client.requests.get", return_value=_Resp({"amount_rtc": 5.0, "miner_id": "x"})) as g:
+        out = c.balance("x")
+    assert out["amount_rtc"] == 5.0
+    assert g.call_args[0][0] == "https://example.test/wallet/balance"  # NOT bare /balance

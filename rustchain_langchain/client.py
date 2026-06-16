@@ -61,3 +61,51 @@ class RustChainClient:
     def health(self) -> dict:
         """Node health (ok, db_rw, version, backup age)."""
         return self._get_json("/health")
+
+    def balance(self, miner_id: str) -> dict:
+        """RTC balance for a wallet / miner id.
+
+        Uses the live /wallet/balance endpoint (the bare /balance path 404s).
+        """
+        url = f"{self.base_url}/wallet/balance"
+        resp = requests.get(
+            url, params={"miner_id": miner_id}, timeout=self.timeout, verify=self.verify
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def epoch(self) -> dict:
+        """Current epoch: number, slot, enrolled miners, reward pot, total supply."""
+        return self._get_json("/epoch")
+
+    def bounties(self, limit: int = 10) -> list:
+        """Open RustChain bounties (GitHub issues on Scottcjn/rustchain-bounties).
+
+        Read-only GitHub search; returns a list of {number, title, reward, url, created}.
+        """
+        limit = max(1, min(int(limit), 50))
+        url = (
+            "https://api.github.com/search/issues?"
+            "q=repo:Scottcjn/rustchain-bounties+state:open+is:issue&"
+            f"per_page={limit}&sort=created&order=desc"
+        )
+        resp = requests.get(
+            url, timeout=self.timeout,
+            headers={"Accept": "application/vnd.github.v3+json"},
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])[:limit]
+        import re
+
+        out = []
+        for it in items:
+            body = it.get("body", "") or ""
+            m = re.search(r"(\d+)\s*RTC", body)
+            out.append({
+                "number": it.get("number"),
+                "title": (it.get("title") or "")[:100],
+                "reward": f"{m.group(1)} RTC" if m else "see issue",
+                "url": it.get("html_url"),
+                "created": (it.get("created_at") or "")[:10],
+            })
+        return out

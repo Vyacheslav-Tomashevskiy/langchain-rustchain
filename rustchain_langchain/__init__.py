@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""langchain-rustchain — read-only LangChain tools for the RustChain agent economy."""
+"""langchain-rustchain — read-only LangChain tools for the RustChain agent economy.
+
+The balance / bounties / epoch tools were contributed by @hektorhq
+(SiliconBountyHunter) for bounty #3074; merged here with the balance endpoint
+corrected to /wallet/balance and a tested, never-raise wrapper.
+"""
 from .client import RustChainClient
 from .tools import (
     get_rustchain_tools,
@@ -7,9 +12,12 @@ from .tools import (
     summarize_payouts,
     summarize_miners,
     summarize_health,
+    summarize_balance,
+    summarize_epoch,
+    summarize_bounties,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "RustChainClient",
     "get_rustchain_tools",
@@ -17,4 +25,7 @@ __all__ = [
     "summarize_payouts",
     "summarize_miners",
     "summarize_health",
+    "summarize_balance",
+    "summarize_epoch",
+    "summarize_bounties",
 ]
