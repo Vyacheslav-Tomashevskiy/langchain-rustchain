@@ -7,9 +7,12 @@ from .tools import (
     summarize_payouts,
     summarize_miners,
     summarize_health,
+    summarize_epoch,
+    summarize_hall_of_fame,
+    summarize_bounties,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "RustChainClient",
     "get_rustchain_tools",
@@ -17,4 +20,7 @@ __all__ = [
     "summarize_payouts",
     "summarize_miners",
     "summarize_health",
+    "summarize_epoch",
+    "summarize_hall_of_fame",
+    "summarize_bounties",
 ]

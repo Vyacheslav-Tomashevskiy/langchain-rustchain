@@ -14,9 +14,34 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 from typing import List
 
 from .client import RustChainClient
+
+
+# Matches a reward like "5 RTC" / "67RTC" / "1.5 RTC" but not "RTC5f3a..."
+# wallet addresses. Mirrors the official bounty-concierge parser.
+_RTC_PATTERN = re.compile(r"(?<![A-Za-z0-9])(\d+(?:[.,]\d+)?)\s*RTC\b", re.IGNORECASE)
+
+
+def _parse_reward(title: str, body: str = "") -> float:
+    """Best-effort RTC reward from an issue title (falling back to body).
+
+    Picks the largest plain number followed by ``RTC`` (so a "50-200 RTC"
+    range reports the upper bound). Returns ``0.0`` when none is found.
+    """
+    best = 0.0
+    for text in (title or "", body or ""):
+        for m in _RTC_PATTERN.finditer(text):
+            try:
+                val = float(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            best = max(best, val)
+        if best:
+            break
+    return best
 
 
 # --- pure summarizers (framework-free, unit-tested) ---------------------
@@ -72,6 +97,64 @@ def summarize_health(data: dict) -> str:
         f"db_rw={data.get('db_rw', '?')}, version={data.get('version', '?')}, "
         f"backup_age_hours={round(data.get('backup_age_hours', 0), 1)}."
     )
+
+
+def summarize_epoch(data: dict) -> str:
+    return (
+        f"RustChain is in epoch {data.get('epoch', '?')} "
+        f"(slot {data.get('slot', '?')}, {data.get('blocks_per_epoch', '?')} "
+        f"blocks/epoch). {data.get('enrolled_miners', '?')} miner(s) enrolled, "
+        f"epoch pot {data.get('epoch_pot', '?')} RTC, "
+        f"total supply {data.get('total_supply_rtc', '?')} RTC."
+    )
+
+
+def summarize_hall_of_fame(data, top: int = 5) -> str:
+    # /hall/leaderboard returns {"leaderboard": [...]}; tolerate a bare list.
+    if isinstance(data, list):
+        board = data
+    elif isinstance(data, dict):
+        board = data.get("leaderboard", [])
+    else:
+        board = []
+    if not isinstance(board, list):
+        board = []
+    if not board:
+        return "RustChain Hall of Fame: no machines reported."
+    parts = [f"RustChain Hall of Fame — top {min(top, len(board))} oldest/most-attested machines:"]
+    for m in board[:top]:
+        model = m.get("device_model") or m.get("device_arch") or "unknown"
+        year = m.get("manufacture_year")
+        year_s = f", {year}" if year else ""
+        parts.append(
+            f"#{m.get('rank', '?')} {model}{year_s} — "
+            f"rust_score {m.get('rust_score', '?')}, "
+            f"{m.get('total_attestations', '?')} attestations"
+            + (f" [{m.get('badge')}]" if m.get("badge") else "")
+        )
+    return "\n".join(parts)
+
+
+def summarize_bounties(data, top: int = 5) -> str:
+    issues = data if isinstance(data, list) else []
+    issues = [i for i in issues if isinstance(i, dict) and "pull_request" not in i]
+    if not issues:
+        return "RustChain has no open bounties right now."
+    scored = sorted(
+        ((_parse_reward(i.get("title", ""), i.get("body", "") or ""), i) for i in issues),
+        key=lambda t: t[0],
+        reverse=True,
+    )
+    total = sum(r for r, _ in scored)
+    parts = [
+        f"{len(issues)} open RustChain bounties "
+        f"(~{round(total)} RTC across those with a stated reward). Top:"
+    ]
+    for reward, i in scored[:top]:
+        reward_s = f"{reward:g} RTC" if reward else "reward TBD"
+        title = (i.get("title", "") or "").strip()
+        parts.append(f"- [{reward_s}] #{i.get('number', '?')} {title[:80]}")
+    return "\n".join(parts)
 
 
 # --- LangChain tool wrappers --------------------------------------------
@@ -131,5 +214,30 @@ def get_rustchain_tools(
             "backup age). Use to verify the network is up before relying on it.",
             client.health,
             summarize_health,
+        ),
+        _make(
+            "rustchain_epoch",
+            "Get the current RustChain epoch and slot, blocks per epoch, number of "
+            "enrolled miners, the epoch reward pot, and total RTC supply. Use for "
+            "questions about where the chain is in its reward cycle right now.",
+            client.epoch,
+            summarize_epoch,
+        ),
+        _make(
+            "rustchain_hall_of_fame",
+            "Get the RustChain Hall of Fame leaderboard — the oldest and most-attested "
+            "machines, ranked by rust score (antiquity × attestations), with device "
+            "model, manufacture year and badge. Use for questions about the oldest or "
+            "top-ranked hardware on the network.",
+            client.hall_of_fame,
+            summarize_hall_of_fame,
+        ),
+        _make(
+            "rustchain_bounties",
+            "List the open RustChain bounties (paid tasks) with their RTC rewards, "
+            "sorted by reward. Use when asked what bounties are open, what work pays "
+            "RTC, or how an agent can earn on RustChain.",
+            client.bounties,
+            summarize_bounties,
         ),
     ]
