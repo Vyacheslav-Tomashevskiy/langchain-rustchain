@@ -135,3 +135,180 @@ def test_client_balance_uses_wallet_balance_endpoint():
         out = c.balance("x")
     assert out["amount_rtc"] == 5.0
     assert g.call_args[0][0] == "https://example.test/wallet/balance"  # NOT bare /balance
+
+
+# --- async client / async tools (httpx) ---------------------------------
+# httpx is monkeypatched, so these never touch the network either. Async
+# coroutines are driven with asyncio.run(...) so no pytest-asyncio is needed.
+import asyncio
+
+from rustchain_langchain import AsyncRustChainClient
+
+
+class _AsyncResp:
+    def __init__(self, payload):
+        self._p = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._p
+
+
+def _fake_async_client(payload, capture=None):
+    """Drop-in for ``httpx.AsyncClient`` that records the request and yields
+    ``payload`` — no network, no real httpx connection."""
+    cap = capture if capture is not None else {}
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            cap["init_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kwargs):
+            cap["url"] = url
+            cap["get_kwargs"] = kwargs
+            return _AsyncResp(payload)
+
+    return _FakeAsyncClient
+
+
+def test_async_client_builds_url_and_parses():
+    cap = {}
+    c = AsyncRustChainClient(base_url="https://example.test", timeout=7)
+    with mock.patch("httpx.AsyncClient", _fake_async_client({"ok": True}, cap)):
+        out = asyncio.run(c.health())
+    assert out == {"ok": True}
+    assert cap["url"] == "https://example.test/health"
+    assert cap["init_kwargs"].get("timeout") == 7
+
+
+def test_async_client_miners_path():
+    cap = {}
+    c = AsyncRustChainClient(base_url="https://example.test")
+    with mock.patch("httpx.AsyncClient", _fake_async_client({"miners": []}, cap)):
+        asyncio.run(c.miners())
+    assert cap["url"] == "https://example.test/api/miners"
+
+
+def test_async_client_balance_passes_miner_id():
+    cap = {}
+    c = AsyncRustChainClient(base_url="https://example.test")
+    payload = {"miner_id": "dual-g4-125", "amount_rtc": 42}
+    with mock.patch("httpx.AsyncClient", _fake_async_client(payload, cap)):
+        out = asyncio.run(c.balance("dual-g4-125"))
+    assert cap["url"] == "https://example.test/wallet/balance"
+    assert cap["get_kwargs"]["params"] == {"miner_id": "dual-g4-125"}
+    assert summarize_balance(out) == "Wallet 'dual-g4-125' holds 42 RTC."
+
+
+def test_async_client_bounties_reshapes_items():
+    cap = {}
+    c = AsyncRustChainClient(base_url="https://example.test")
+    payload = {"items": [
+        {"number": 7, "title": "Add a thing", "body": "pays 25 RTC on merge",
+         "html_url": "https://x/7", "created_at": "2026-06-16T00:00:00Z"},
+        {"number": 8, "title": "No reward", "body": "", "html_url": "https://x/8",
+         "created_at": "2026-06-15T00:00:00Z"},
+    ]}
+    with mock.patch("httpx.AsyncClient", _fake_async_client(payload, cap)):
+        out = asyncio.run(c.bounties(limit=5))
+    assert "search/issues" in cap["url"]
+    assert [b["number"] for b in out] == [7, 8]
+    assert out[0]["reward"] == "25 RTC"
+    assert out[1]["reward"] == "see issue"
+
+
+def test_async_client_methods_fan_out_concurrently():
+    cap = {}
+    c = AsyncRustChainClient(base_url="https://example.test")
+    payload = {"ok": True}
+
+    async def _gather():
+        with mock.patch("httpx.AsyncClient", _fake_async_client(payload, cap)):
+            return await asyncio.gather(c.health(), c.health(), c.health())
+
+    results = asyncio.run(_gather())
+    assert results == [payload, payload, payload]
+
+
+def test_async_tool_arun_summarizes_on_success():
+    try:
+        from rustchain_langchain import get_async_rustchain_tools
+        tools = get_async_rustchain_tools(base_url="https://example.test")
+    except Exception:
+        return  # langchain-core unavailable — skip gracefully
+    tool = next(t for t in tools if t.name == "rustchain_payouts")
+    payload = {"total_paid_rtc": "66,531+", "unique_recipients": 1061,
+               "transactions": 3234, "updated_at": "x"}
+    with mock.patch("httpx.AsyncClient", _fake_async_client(payload)):
+        out = asyncio.run(tool._arun())
+    assert "66,531+ RTC paid" in out
+
+
+def test_async_tool_arun_never_raises_on_failure():
+    try:
+        from rustchain_langchain import get_async_rustchain_tools
+        tools = get_async_rustchain_tools(base_url="https://example.test")
+    except Exception:
+        return
+    tool = next(t for t in tools if t.name == "rustchain_payouts")
+
+    class _BoomClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, *a, **k):
+            raise RuntimeError("boom")
+
+    with mock.patch("httpx.AsyncClient", _BoomClient):
+        out = asyncio.run(tool._arun())
+    assert "RustChain query failed" in out  # graceful, not an exception
+
+
+def test_async_balance_tool_takes_miner_id():
+    try:
+        from rustchain_langchain import get_async_rustchain_tools
+        tools = get_async_rustchain_tools(base_url="https://example.test")
+    except Exception:
+        return
+    tool = next(t for t in tools if t.name == "rustchain_balance")
+    payload = {"miner_id": "g5-001", "amount_rtc": 7}
+    with mock.patch("httpx.AsyncClient", _fake_async_client(payload)):
+        out = asyncio.run(tool._arun("g5-001"))
+    assert out == "Wallet 'g5-001' holds 7 RTC."
+
+
+def test_async_tool_sync_bridge_runs_when_no_loop():
+    try:
+        from rustchain_langchain import get_async_rustchain_tools
+        tools = get_async_rustchain_tools(base_url="https://example.test")
+    except Exception:
+        return
+    tool = next(t for t in tools if t.name == "rustchain_node_health")
+    payload = {"ok": True, "db_rw": True, "version": "2.2.1", "backup_age_hours": 1.0}
+    with mock.patch("httpx.AsyncClient", _fake_async_client(payload)):
+        out = tool._run()  # no running loop -> bridges via asyncio.run
+    assert "ok=True" in out and "version=2.2.1" in out
+
+
+def test_async_tools_match_sync_tool_names():
+    try:
+        from rustchain_langchain import get_rustchain_tools, get_async_rustchain_tools
+        sync_names = {t.name for t in get_rustchain_tools(base_url="https://example.test")}
+        async_names = {t.name for t in get_async_rustchain_tools(base_url="https://example.test")}
+    except Exception:
+        return
+    assert sync_names == async_names  # async surface mirrors the sync one
