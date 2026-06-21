@@ -65,7 +65,7 @@ matching async tools let those reads run **concurrently** instead of blocking on
 each request:
 
 ```bash
-pip install "langchain-rustchain-tools[async]"   # pulls in httpx
+pip install "langchain-rustchain-tools[async]"   # pulls in httpx + langchain-core
 ```
 
 ```python

@@ -87,7 +87,7 @@ def test_tool_run_never_raises_on_failure():
     try:
         from rustchain_langchain import get_rustchain_tools
         tools = get_rustchain_tools(base_url="https://example.test")
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
     tool = next(t for t in tools if t.name == "rustchain_payouts")
     with mock.patch("rustchain_langchain.client.requests.get", side_effect=RuntimeError("boom")):
@@ -99,7 +99,7 @@ def test_tool_run_summarizes_on_success():
     try:
         from rustchain_langchain import get_rustchain_tools
         tools = get_rustchain_tools(base_url="https://example.test")
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
     tool = next(t for t in tools if t.name == "rustchain_payouts")
     payload = {"total_paid_rtc": "66,531+", "unique_recipients": 1061, "transactions": 3234, "updated_at": "x"}
@@ -220,9 +220,53 @@ def test_async_client_bounties_reshapes_items():
     with mock.patch("httpx.AsyncClient", _fake_async_client(payload, cap)):
         out = asyncio.run(c.bounties(limit=5))
     assert "search/issues" in cap["url"]
+    assert "label:bounty" in cap["url"]  # canonical query filters to bounty issues
     assert [b["number"] for b in out] == [7, 8]
     assert out[0]["reward"] == "25 RTC"
     assert out[1]["reward"] == "see issue"
+
+
+def test_canonical_reward_parser_reads_title_and_decimals():
+    """Shared parser used by both clients: title rewards like ``[BOUNTY: 50 RTC]``
+    and decimal amounts must be captured, not dropped to ``see issue``."""
+    from rustchain_langchain.client import _parse_reward, _reshape_bounty
+
+    # title-only reward (the common `[BOUNTY: N RTC]` shape)
+    assert _parse_reward("[BOUNTY: 50 RTC] Add X", "no amount in body") == "50 RTC"
+    # decimal amount in the body
+    assert _parse_reward("Fix Y", "reward is 2.5 RTC on merge") == "2.5 RTC"
+    # title takes precedence over body when both carry an amount
+    assert _parse_reward("[BOUNTY: 75 RTC]", "10 RTC mentioned offhand") == "75 RTC"
+    # nothing stated -> graceful fallback
+    assert _parse_reward("No money here", "") == "see issue"
+    # _reshape_bounty applies the same parser end-to-end
+    shaped = _reshape_bounty({
+        "number": 12, "title": "[BOUNTY: 50 RTC] Add a tool",
+        "body": "", "html_url": "https://x/12", "created_at": "2026-06-20T00:00:00Z",
+    })
+    assert shaped == {
+        "number": 12, "title": "[BOUNTY: 50 RTC] Add a tool", "reward": "50 RTC",
+        "url": "https://x/12", "created": "2026-06-20",
+    }
+
+
+def test_sync_and_async_bounties_share_canonical_shape():
+    """The same raw issue must produce byte-identical output from the sync client
+    and the async client (the README's sync/async parity promise)."""
+    from rustchain_langchain import RustChainClient
+    raw = {"items": [
+        {"number": 9, "title": "[BOUNTY: 12.5 RTC] Tweak Z", "body": "",
+         "html_url": "https://x/9", "created_at": "2026-06-14T00:00:00Z"},
+    ]}
+    sync_c = RustChainClient(base_url="https://example.test")
+    with mock.patch("rustchain_langchain.client.requests.get",
+                    return_value=_Resp(raw)):
+        sync_out = sync_c.bounties(limit=5)
+    async_c = AsyncRustChainClient(base_url="https://example.test")
+    with mock.patch("httpx.AsyncClient", _fake_async_client(raw)):
+        async_out = asyncio.run(async_c.bounties(limit=5))
+    assert sync_out == async_out
+    assert sync_out[0]["reward"] == "12.5 RTC"
 
 
 def test_async_client_methods_fan_out_concurrently():
@@ -242,7 +286,7 @@ def test_async_tool_arun_summarizes_on_success():
     try:
         from rustchain_langchain import get_async_rustchain_tools
         tools = get_async_rustchain_tools(base_url="https://example.test")
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return  # langchain-core unavailable — skip gracefully
     tool = next(t for t in tools if t.name == "rustchain_payouts")
     payload = {"total_paid_rtc": "66,531+", "unique_recipients": 1061,
@@ -256,7 +300,7 @@ def test_async_tool_arun_never_raises_on_failure():
     try:
         from rustchain_langchain import get_async_rustchain_tools
         tools = get_async_rustchain_tools(base_url="https://example.test")
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
     tool = next(t for t in tools if t.name == "rustchain_payouts")
 
@@ -282,7 +326,7 @@ def test_async_balance_tool_takes_miner_id():
     try:
         from rustchain_langchain import get_async_rustchain_tools
         tools = get_async_rustchain_tools(base_url="https://example.test")
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
     tool = next(t for t in tools if t.name == "rustchain_balance")
     payload = {"miner_id": "g5-001", "amount_rtc": 7}
@@ -295,7 +339,7 @@ def test_async_tool_sync_bridge_runs_when_no_loop():
     try:
         from rustchain_langchain import get_async_rustchain_tools
         tools = get_async_rustchain_tools(base_url="https://example.test")
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
     tool = next(t for t in tools if t.name == "rustchain_node_health")
     payload = {"ok": True, "db_rw": True, "version": "2.2.1", "backup_age_hours": 1.0}
@@ -309,6 +353,6 @@ def test_async_tools_match_sync_tool_names():
         from rustchain_langchain import get_rustchain_tools, get_async_rustchain_tools
         sync_names = {t.name for t in get_rustchain_tools(base_url="https://example.test")}
         async_names = {t.name for t in get_async_rustchain_tools(base_url="https://example.test")}
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return
     assert sync_names == async_names  # async surface mirrors the sync one

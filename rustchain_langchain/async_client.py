@@ -15,7 +15,12 @@ in ``tools.py``. Install the async extra with
 """
 from __future__ import annotations
 
-from .client import DEFAULT_BASE_URL, DEFAULT_TIMEOUT
+from .client import (
+    DEFAULT_BASE_URL,
+    DEFAULT_TIMEOUT,
+    _bounties_search_url,
+    _reshape_bounty,
+)
 
 
 class AsyncRustChainClient:
@@ -93,34 +98,18 @@ class AsyncRustChainClient:
         """Open RustChain bounties (GitHub issues on Scottcjn/rustchain-bounties).
 
         Read-only GitHub search; returns a list of {number, title, reward, url,
-        created}. Async twin of :meth:`RustChainClient.bounties`.
+        created}. Async twin of :meth:`RustChainClient.bounties` — same query,
+        reward parser and output shape via the shared canonical helpers.
         """
-        import re
-
         import httpx  # lazy
 
         limit = max(1, min(int(limit), 50))
-        url = (
-            "https://api.github.com/search/issues?"
-            "q=repo:Scottcjn/rustchain-bounties+state:open+is:issue&"
-            f"per_page={limit}&sort=created&order=desc"
-        )
         async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify) as client:
             resp = await client.get(
-                url, headers={"Accept": "application/vnd.github.v3+json"}
+                _bounties_search_url(limit),
+                headers={"Accept": "application/vnd.github.v3+json"},
             )
             resp.raise_for_status()
             items = resp.json().get("items", [])[:limit]
 
-        out = []
-        for it in items:
-            body = it.get("body", "") or ""
-            m = re.search(r"(\d+)\s*RTC", body)
-            out.append({
-                "number": it.get("number"),
-                "title": (it.get("title") or "")[:100],
-                "reward": f"{m.group(1)} RTC" if m else "see issue",
-                "url": it.get("html_url"),
-                "created": (it.get("created_at") or "")[:10],
-            })
-        return out
+        return [_reshape_bounty(it) for it in items]
